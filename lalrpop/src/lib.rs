@@ -30,6 +30,8 @@ mod grammar;
 mod kernel_set;
 mod lexer;
 mod lr1;
+#[cfg(feature = "lsp")]
+pub mod lsp;
 mod message;
 mod normalize;
 mod parser;
