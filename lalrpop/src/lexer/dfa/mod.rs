@@ -6,7 +6,10 @@ use crate::kernel_set::{Kernel, KernelSet};
 use crate::lexer::nfa::{self, Nfa, NfaConstructionError, NfaStateIndex, Test};
 use crate::lexer::re;
 use std::fmt::{Debug, Display, Error, Formatter};
+#[cfg(not(feature = "lsp"))]
 use std::rc::Rc;
+#[cfg(feature = "lsp")]
+use std::sync::Arc as Rc;
 
 #[cfg(test)]
 mod test;
