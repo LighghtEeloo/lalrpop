@@ -17,6 +17,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{jsonrpc::Result, Client, LanguageServer};
 
 /// Text document item for file changes
+#[allow(dead_code)]
 pub struct TextDocumentItem {
     uri: Url,
     text: String,
@@ -41,6 +42,12 @@ impl LalrpopLsp {
     }
     /// Get the grammar for a given URI
     pub async fn on_change(&self, params: TextDocumentItem) {
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("on change: {:?}", params.text.as_str()),
+            )
+            .await;
         let grammar: pt::Grammar = parser::parse_grammar(params.text.as_str()).unwrap();
         self.parse_trees
             .insert(params.uri.to_string(), grammar.to_owned());

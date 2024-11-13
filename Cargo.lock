@@ -600,7 +600,6 @@ dependencies = [
  "sha3",
  "string_cache",
  "term",
- "tokio",
  "tower-lsp",
  "unicode-xid",
  "walkdir",
@@ -1068,15 +1067,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9e9e0b4211b72e7b8b6e85c807d36c212bdb33ea8587f7569562a84df5465b1"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "siphasher"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1174,10 +1164,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d61fa4ffa3de412bfea335c6ecff681de2b609ba3c77ef3e00e521813a9ed9e"
 dependencies = [
  "backtrace",
- "bytes",
- "libc",
- "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
