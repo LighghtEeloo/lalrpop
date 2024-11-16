@@ -45,16 +45,26 @@ impl LalrpopLsp {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("on change: {:?}", params.text.as_str()),
+                format!("on change:\n{}", params.text.as_str()),
             )
             .await;
         let grammar: pt::Grammar = parser::parse_grammar(params.text.as_str()).unwrap();
         let uri = params.uri.to_string();
-        self.parse_trees
-            .insert(uri.to_owned(), grammar.to_owned());
+        self.parse_trees.insert(uri.to_owned(), grammar.to_owned());
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("parsed:\n{:#?}", self.parse_trees.get(&uri).as_deref()),
+            )
+            .await;
         let grammar: r::Grammar = normalize::normalize(&Session::new(), grammar).unwrap();
         self.repr.insert(uri.to_owned(), grammar);
-        self.client.log_message(MessageType::INFO, format!("{:?}", self.repr.get(&uri))).await;
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("normalized:\n{:#?}", self.repr.get(&uri).as_deref()),
+            )
+            .await;
     }
 }
 
@@ -63,6 +73,16 @@ impl LanguageServer for LalrpopLsp {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::FULL,
+                )),
+                workspace: Some(WorkspaceServerCapabilities {
+                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                        supported: Some(true),
+                        change_notifications: Some(OneOf::Left(true)),
+                    }),
+                    file_operations: None,
+                }),
                 // semantic_tokens_provider: Some(
                 //     SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(
                 //         SemanticTokensRegistrationOptions {
