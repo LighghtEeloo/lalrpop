@@ -45,7 +45,8 @@ impl LalrpopLsp {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("on change:\n{}", params.text.as_str()),
+                format!("on change: {}", params.uri.as_str()),
+                // format!("on change:\n{}", params.text.as_str()),
             )
             .await;
         let grammar: pt::Grammar = parser::parse_grammar(params.text.as_str()).unwrap();
