@@ -49,10 +49,12 @@ impl LalrpopLsp {
             )
             .await;
         let grammar: pt::Grammar = parser::parse_grammar(params.text.as_str()).unwrap();
+        let uri = params.uri.to_string();
         self.parse_trees
-            .insert(params.uri.to_string(), grammar.to_owned());
+            .insert(uri.to_owned(), grammar.to_owned());
         let grammar: r::Grammar = normalize::normalize(&Session::new(), grammar).unwrap();
-        self.repr.insert(params.uri.to_string(), grammar);
+        self.repr.insert(uri.to_owned(), grammar);
+        self.client.log_message(MessageType::INFO, format!("{:?}", self.repr.get(&uri))).await;
     }
 }
 
@@ -61,6 +63,32 @@ impl LanguageServer for LalrpopLsp {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                // semantic_tokens_provider: Some(
+                //     SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(
+                //         SemanticTokensRegistrationOptions {
+                //             text_document_registration_options: {
+                //                 TextDocumentRegistrationOptions {
+                //                     document_selector: Some(vec![DocumentFilter {
+                //                         language: Some("LALRPOP".to_string()),
+                //                         scheme: Some("file".to_string()),
+                //                         pattern: None,
+                //                     }]),
+                //                 }
+                //             },
+                //             semantic_tokens_options: SemanticTokensOptions {
+                //                 work_done_progress_options: WorkDoneProgressOptions::default(),
+                //                 legend: SemanticTokensLegend {
+                //                     // token_types: `LEGEND_TYPE`.into(),
+                //                     token_types: [].into(),
+                //                     token_modifiers: vec![],
+                //                 },
+                //                 range: Some(true),
+                //                 full: Some(SemanticTokensFullOptions::Bool(true)),
+                //             },
+                //             static_registration_options: StaticRegistrationOptions::default(),
+                //         },
+                //     ),
+                // ),
                 ..Default::default()
             },
             ..Default::default()
