@@ -7,7 +7,14 @@
 //! - Go to definition
 //! - Find references
 
+use std::path::PathBuf;
+
+use crate::file_text::FileText;
 use crate::grammar::parse_tree as pt;
+use crate::grammar::parse_tree::Alternative;
+use crate::grammar::parse_tree::ExprSymbol;
+use crate::grammar::parse_tree::Span;
+use crate::grammar::parse_tree::Symbol;
 use crate::grammar::repr as r;
 use crate::normalize;
 use crate::parser;
@@ -24,11 +31,144 @@ pub struct TextDocumentItem {
     version: i32,
 }
 
+/// Items that can be found with a span.
+#[derive(Clone, Debug)]
+pub enum SpanItem {
+    /// Grammar of the LALRPOP file.
+    Grammar,
+    /// Definition of a nonterminal or macro.
+    Definition(String),
+    /// Reference to a nonterminal or macro.
+    Reference(String),
+}
+
+/// Info extracted from a LALRPOP file.
+#[allow(dead_code)]
+pub struct LalrpopFile {
+    file_text: FileText,
+    tree: pt::Grammar,
+    span_items: Vec<(Span, SpanItem)>,
+    repr: r::Grammar,
+}
+
+impl LalrpopFile {
+    /// Constructor.
+    pub fn new(text: impl AsRef<str>) -> Self {
+        let file_text = FileText::new(PathBuf::new(), text.as_ref().to_owned());
+        let tree: pt::Grammar = parser::parse_grammar(text.as_ref()).unwrap();
+        let mut span_items = vec![];
+        {
+            // traverse the tree to extract spans
+            let pt::Grammar {
+                prefix: _,
+                span,
+                type_parameters: _,
+                parameters: _,
+                where_clauses: _,
+                items,
+                attributes: _,
+                module_attributes: _,
+            } = tree.to_owned();
+            span_items.push((span, SpanItem::Grammar));
+            for item in items {
+                match item {
+                    pt::GrammarItem::MatchToken(_match_token) => {
+                        // not related to definition or reference feature, skipping
+                    }
+                    pt::GrammarItem::ExternToken(_extern_token) => {
+                        // not related to definition or reference feature, skipping
+                    }
+                    pt::GrammarItem::InternToken(_intern_token) => {
+                        // not related to definition or reference feature, skipping
+                    }
+                    pt::GrammarItem::Nonterminal(pt::NonterminalData {
+                        visibility: _,
+                        name,
+                        attributes: _,
+                        span,
+                        // we can't do anything with just strings
+                        args: _,
+                        type_decl: _,
+                        alternatives,
+                    }) => {
+                        span_items.push((span, SpanItem::Definition(name.to_string())));
+                        for alternative in alternatives {
+                            let Alternative {
+                                // don't care about the whole alternative
+                                span: _,
+                                expr,
+                                // `if` guard, only legal in macros
+                                condition: _,
+                                // code blocks afterwards
+                                action: _,
+                                attributes: _,
+                            } = alternative;
+                            Self::collect_expr_symbol(expr, &mut span_items);
+                        }
+                    }
+                    pt::GrammarItem::Use(_) => {
+                        // what is use? we don't deal with it here
+                    }
+                }
+            }
+        }
+        let repr: r::Grammar = normalize::normalize(&Session::new(), tree.to_owned()).unwrap();
+        Self {
+            file_text,
+            tree,
+            span_items,
+            repr,
+        }
+    }
+
+    fn collect_expr_symbol(expr_symbol: ExprSymbol, span_items: &mut Vec<(Span, SpanItem)>) {
+        let ExprSymbol { symbols } = expr_symbol;
+        for symbol in symbols {
+            Self::collect_symbol(symbol, span_items);
+        }
+    }
+
+    fn collect_symbol(symbol: Symbol, span_items: &mut Vec<(Span, SpanItem)>) {
+        let Symbol { span, kind } = symbol;
+        match kind {
+            pt::SymbolKind::Expr(expr_symbol) => Self::collect_expr_symbol(expr_symbol, span_items),
+            pt::SymbolKind::AmbiguousId(atom) => {
+                // figure out what to do with this
+                span_items.push((span, SpanItem::Reference(atom.to_string())));
+            }
+            pt::SymbolKind::Terminal(_terminal_string) => {
+                // terminal, nothing to do
+            }
+            pt::SymbolKind::Nonterminal(_nonterminal_string) => {
+                // nonterminal, don't know what to do with it
+            }
+            pt::SymbolKind::Macro(macro_symbol) => {
+                let pt::MacroSymbol { name, args } = macro_symbol;
+                span_items.push((span, SpanItem::Reference(name.to_string())));
+                for arg in args {
+                    Self::collect_symbol(arg, span_items);
+                }
+            }
+            pt::SymbolKind::Repeat(repeat_symbol) => {
+                Self::collect_symbol(repeat_symbol.symbol, span_items);
+            }
+            pt::SymbolKind::Choose(symbol) => {
+                Self::collect_symbol(*symbol, span_items);
+            }
+            pt::SymbolKind::Name(_name, symbol) => {
+                Self::collect_symbol(*symbol, span_items);
+            }
+            pt::SymbolKind::Lookahead => {}
+            pt::SymbolKind::Lookbehind => {}
+            pt::SymbolKind::Error => {}
+        }
+    }
+}
+
 /// LALRPOP Language Server Protocol
 pub struct LalrpopLsp {
     client: Client,
-    parse_trees: DashMap<String, pt::Grammar>,
-    repr: DashMap<String, r::Grammar>,
+    files: DashMap<String, LalrpopFile>,
 }
 
 impl LalrpopLsp {
@@ -36,8 +176,7 @@ impl LalrpopLsp {
     pub fn new(client: Client) -> Self {
         Self {
             client,
-            parse_trees: DashMap::new(),
-            repr: DashMap::new(),
+            files: DashMap::new(),
         }
     }
     /// Get the grammar for a given URI
@@ -49,23 +188,22 @@ impl LalrpopLsp {
                 // format!("on change:\n{}", params.text.as_str()),
             )
             .await;
-        let grammar: pt::Grammar = parser::parse_grammar(params.text.as_str()).unwrap();
         let uri = params.uri.to_string();
-        self.parse_trees.insert(uri.to_owned(), grammar.to_owned());
+        let file = LalrpopFile::new(params.text.as_str());
+        // self.client
+        //     .log_message(MessageType::INFO, format!("parsed:\n{:#?}", file.tree))
+        //     .await;
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("parsed:\n{:#?}", self.parse_trees.get(&uri).as_deref()),
+                format!("spanned:\n{:#?}", file.span_items),
             )
             .await;
-        let grammar: r::Grammar = normalize::normalize(&Session::new(), grammar).unwrap();
-        self.repr.insert(uri.to_owned(), grammar);
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!("normalized:\n{:#?}", self.repr.get(&uri).as_deref()),
-            )
-            .await;
+        // self.client
+        //     .log_message(MessageType::INFO, format!("normalized:\n{:#?}", file.repr))
+        //     .await;
+        // update
+        self.files.insert(uri.clone(), file);
     }
 }
 
