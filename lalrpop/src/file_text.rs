@@ -76,6 +76,10 @@ impl FileText {
         (line, col)
     }
 
+    pub fn offset_from_line_col(&self, line: usize, col: usize) -> Option<usize> {
+        self.newlines.get(line).map(|n| n + col)
+    }
+
     fn line_text(&self, line_num: usize) -> &str {
         let start_offset = self.newlines[line_num];
         if line_num == self.newlines.len() - 1 {
