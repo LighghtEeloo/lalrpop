@@ -7,14 +7,12 @@
 //! - Go to definition
 //! - Find references
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::file_text::FileText;
 use crate::grammar::parse_tree as pt;
-use crate::grammar::parse_tree::Alternative;
-use crate::grammar::parse_tree::ExprSymbol;
-use crate::grammar::parse_tree::Span;
-use crate::grammar::parse_tree::Symbol;
+use crate::grammar::parse_tree::{Alternative, ExprSymbol, Span, Symbol};
 use crate::grammar::repr as r;
 use crate::normalize;
 use crate::parser;
@@ -48,6 +46,8 @@ pub struct LalrpopFile {
     file_text: FileText,
     tree: pt::Grammar,
     span_items: Vec<(Span, SpanItem)>,
+    definitions: HashMap<String, Span>,
+    references: HashMap<String, Vec<Span>>,
     repr: r::Grammar,
 }
 
@@ -111,12 +111,38 @@ impl LalrpopFile {
                     }
                 }
             }
+            // next, sort the spans
+            span_items.sort_by_key(|(span, _)| span.0);
         }
+        let definitions = span_items
+            .iter()
+            .filter_map(|(span, item)| match item {
+                SpanItem::Definition(name) => Some((name.to_string(), span.to_owned())),
+                _ => None,
+            })
+            .collect();
+        let references = {
+            let mut references = HashMap::new();
+            for (span, item) in span_items.iter() {
+                match item {
+                    SpanItem::Reference(name) => {
+                        references
+                            .entry(name.to_string())
+                            .or_insert_with(Vec::new)
+                            .push(span.to_owned());
+                    }
+                    _ => {}
+                }
+            }
+            references
+        };
         let repr: r::Grammar = normalize::normalize(&Session::new(), tree.to_owned()).unwrap();
         Self {
             file_text,
             tree,
             span_items,
+            definitions,
+            references,
             repr,
         }
     }
@@ -163,6 +189,38 @@ impl LalrpopFile {
             pt::SymbolKind::Error => {}
         }
     }
+
+    /// Get the offset from a line and column.
+    pub fn offset_from_line_col(&self, line: usize, col: usize) -> Option<usize> {
+        self.file_text.offset_from_line_col(line, col)
+    }
+
+    /// Get the line and column from an offset.
+    pub fn line_col(&self, offset: usize) -> (usize, usize) {
+        self.file_text.line_col(offset)
+    }
+
+    /// Find spans that contain a given offset.
+    pub fn hit_offset_in_spans(&self, offset: usize) -> Vec<(Span, SpanItem)> {
+        self.span_items
+            .iter()
+            .filter(|(span, _)| span.0 <= offset && offset <= span.1)
+            .cloned()
+            .collect()
+    }
+
+    /// Filter span hits to the closest one.
+    pub fn closest_hit(hits: Vec<(Span, SpanItem)>) -> Option<(Span, SpanItem)> {
+        hits.into_iter().min_by_key(|(span, _)| span.1 - span.0)
+    }
+
+    fn offset_to_position(&self, offset: usize) -> Position {
+        let (line, col) = self.line_col(offset);
+        Position {
+            line: line as u32,
+            character: col as u32,
+        }
+    }
 }
 
 /// LALRPOP Language Server Protocol
@@ -188,8 +246,10 @@ impl LalrpopLsp {
                 // format!("on change:\n{}", params.text.as_str()),
             )
             .await;
+
         let uri = params.uri.to_string();
         let file = LalrpopFile::new(params.text.as_str());
+
         // self.client
         //     .log_message(MessageType::INFO, format!("parsed:\n{:#?}", file.tree))
         //     .await;
@@ -202,6 +262,7 @@ impl LalrpopLsp {
         // self.client
         //     .log_message(MessageType::INFO, format!("normalized:\n{:#?}", file.repr))
         //     .await;
+
         // update
         self.files.insert(uri.clone(), file);
     }
@@ -215,6 +276,8 @@ impl LanguageServer for LalrpopLsp {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 workspace: Some(WorkspaceServerCapabilities {
                     workspace_folders: Some(WorkspaceFoldersServerCapabilities {
                         supported: Some(true),
@@ -292,5 +355,111 @@ impl LanguageServer for LalrpopLsp {
         self.client
             .log_message(MessageType::INFO, "file closed!")
             .await;
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let Some(file) = self.files.get(uri.as_str()) else {
+            return Ok(None);
+        };
+        let position = params.text_document_position_params.position;
+        let Some(offset) =
+            file.offset_from_line_col(position.line as usize, position.character as usize)
+        else {
+            return Ok(None);
+        };
+        let hits = file.hit_offset_in_spans(offset);
+        // self.client
+        //     .log_message(
+        //         MessageType::INFO,
+        //         format!("goto definition hits: {:#?}", hits),
+        //     )
+        //     .await;
+        let Some((_span, span_item)) = LalrpopFile::closest_hit(hits) else {
+            return Ok(None);
+        };
+        match span_item {
+            SpanItem::Grammar => {}
+            SpanItem::Definition(def) => {
+                // Todo: actually we return the references here
+                let Some(spans) = file.references.get(&def) else {
+                    return Ok(None);
+                };
+                return Ok(Some(GotoDefinitionResponse::Array(
+                    spans
+                        .into_iter()
+                        .map(|span| {
+                            let start = file.offset_to_position(span.0);
+                            let end = file.offset_to_position(span.1);
+                            Location {
+                                uri: uri.to_owned(),
+                                range: Range { start, end },
+                            }
+                        })
+                        .collect(),
+                )));
+            }
+            SpanItem::Reference(def) => {
+                let Some(span) = file.definitions.get(&def) else {
+                    return Ok(None);
+                };
+                let start = file.offset_to_position(span.0);
+                let end = file.offset_to_position(span.1);
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri,
+                    range: Range { start, end },
+                })));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let Some(file) = self.files.get(uri.as_str()) else {
+            return Ok(None);
+        };
+        let position = params.text_document_position.position;
+        let Some(offset) =
+            file.offset_from_line_col(position.line as usize, position.character as usize)
+        else {
+            return Ok(None);
+        };
+        let hits = file.hit_offset_in_spans(offset);
+        // self.client
+        //     .log_message(
+        //         MessageType::INFO,
+        //         format!("references hits: {:#?}", hits),
+        //     )
+        //     .await;
+        let Some((_span, span_item)) = LalrpopFile::closest_hit(hits) else {
+            return Ok(None);
+        };
+        match span_item {
+            SpanItem::Grammar => {}
+            SpanItem::Reference(_) => {}
+            SpanItem::Definition(def) => {
+                let Some(spans) = file.references.get(&def) else {
+                    return Ok(None);
+                };
+                return Ok(Some(
+                    spans
+                        .into_iter()
+                        .map(|span| {
+                            let start = file.offset_to_position(span.0);
+                            let end = file.offset_to_position(span.1);
+                            Location {
+                                uri: uri.to_owned(),
+                                range: Range { start, end },
+                            }
+                        })
+                        .collect(),
+                ));
+            }
+        }
+        Ok(None)
     }
 }
