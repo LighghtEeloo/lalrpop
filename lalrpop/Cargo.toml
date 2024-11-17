@@ -54,7 +54,7 @@ rand_chacha = "0.9"
 default = ["lexer", "unicode", "pico-args", "lsp"]
 unicode = ["regex/unicode", "regex-syntax/unicode", "lalrpop-util/unicode"]
 lexer = ["lalrpop-util/lexer", "lalrpop-util/std"]
-lsp = ["dashmap", "tower-lsp"]
+lsp = []
 
 [package.metadata.docs.rs]
 features = ["lexer"]
