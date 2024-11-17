@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::file_text::FileText;
 use crate::grammar::parse_tree as pt;
-use crate::grammar::parse_tree::{Alternative, ExprSymbol, Span, Symbol};
+use crate::grammar::parse_tree::{Alternative, ExprSymbol, Symbol};
 use crate::grammar::repr as r;
 use crate::normalize;
 use crate::parser;
@@ -20,6 +20,8 @@ use crate::session::Session;
 use dashmap::DashMap;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{jsonrpc::Result, Client, LanguageServer};
+
+pub use crate::grammar::parse_tree::Span;
 
 /// Text document item for file changes
 #[allow(dead_code)]
@@ -213,14 +215,6 @@ impl LalrpopFile {
     pub fn closest_hit(hits: Vec<(Span, SpanItem)>) -> Option<(Span, SpanItem)> {
         hits.into_iter().min_by_key(|(span, _)| span.1 - span.0)
     }
-
-    fn offset_to_position(&self, offset: usize) -> Position {
-        let (line, col) = self.line_col(offset);
-        Position {
-            line: line as u32,
-            character: col as u32,
-        }
-    }
 }
 
 /// LALRPOP Language Server Protocol
@@ -265,6 +259,15 @@ impl LalrpopLsp {
 
         // update
         self.files.insert(uri.clone(), file);
+    }
+
+    /// A helper function to convert an offset to a position.
+    pub fn offset_to_position(file: &LalrpopFile, offset: usize) -> Position {
+        let (line, col) = file.line_col(offset);
+        Position {
+            line: line as u32,
+            character: col as u32,
+        }
     }
 }
 
@@ -392,8 +395,8 @@ impl LanguageServer for LalrpopLsp {
                     spans
                         .into_iter()
                         .map(|span| {
-                            let start = file.offset_to_position(span.0);
-                            let end = file.offset_to_position(span.1);
+                            let start = Self::offset_to_position(&file, span.0);
+                            let end = Self::offset_to_position(&file, span.1);
                             Location {
                                 uri: uri.to_owned(),
                                 range: Range { start, end },
@@ -406,8 +409,8 @@ impl LanguageServer for LalrpopLsp {
                 let Some(span) = file.definitions.get(&def) else {
                     return Ok(None);
                 };
-                let start = file.offset_to_position(span.0);
-                let end = file.offset_to_position(span.1);
+                let start = Self::offset_to_position(&file, span.0);
+                let end = Self::offset_to_position(&file, span.1);
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                     uri,
                     range: Range { start, end },
@@ -449,8 +452,8 @@ impl LanguageServer for LalrpopLsp {
                     spans
                         .into_iter()
                         .map(|span| {
-                            let start = file.offset_to_position(span.0);
-                            let end = file.offset_to_position(span.1);
+                            let start = Self::offset_to_position(&file, span.0);
+                            let end = Self::offset_to_position(&file, span.1);
                             Location {
                                 uri: uri.to_owned(),
                                 range: Range { start, end },
