@@ -40,6 +40,8 @@ pub struct LalrpopFile {
     pub span_items: Vec<(Span, SpanItem)>,
     /// Span of definitions.
     pub definitions: HashMap<String, Span>,
+    /// Type declarations of definitions.
+    pub definition_type_decls: HashMap<String, Option<pt::TypeRef>>,
     /// Span of references.
     pub references: HashMap<String, Vec<Span>>,
     repr: r::Grammar,
@@ -50,7 +52,8 @@ impl LalrpopFile {
     pub fn new(text: impl AsRef<str>) -> Self {
         let file_text = FileText::new(PathBuf::new(), text.as_ref().to_owned());
         let tree: pt::Grammar = parser::parse_grammar(text.as_ref()).unwrap();
-        let mut span_items = vec![];
+        let mut span_items = Vec::new();
+        let mut definition_type_decls = HashMap::new();
         {
             let tree = &tree;
             // traverse the tree to extract spans
@@ -84,9 +87,10 @@ impl LalrpopFile {
                         span,
                         // we can't do anything with just strings
                         args: _,
-                        type_decl: _,
+                        type_decl,
                         alternatives,
                     }) => {
+                        definition_type_decls.insert(name.to_string(), type_decl.to_owned());
                         let span = span.to_owned();
                         span_items.push((span, SpanItem::Definition(name.to_string())));
                         for alternative in alternatives {
@@ -140,6 +144,7 @@ impl LalrpopFile {
             span_items,
             definitions,
             references,
+            definition_type_decls,
             repr,
         }
     }
