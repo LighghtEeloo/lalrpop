@@ -52,6 +52,7 @@ impl LalrpopFile {
         let tree: pt::Grammar = parser::parse_grammar(text.as_ref()).unwrap();
         let mut span_items = vec![];
         {
+            let tree = &tree;
             // traverse the tree to extract spans
             let pt::Grammar {
                 prefix: _,
@@ -62,7 +63,8 @@ impl LalrpopFile {
                 items,
                 attributes: _,
                 module_attributes: _,
-            } = tree.to_owned();
+            } = tree;
+            let span = span.to_owned();
             span_items.push((span, SpanItem::Grammar));
             for item in items {
                 match item {
@@ -85,6 +87,7 @@ impl LalrpopFile {
                         type_decl: _,
                         alternatives,
                     }) => {
+                        let span = span.to_owned();
                         span_items.push((span, SpanItem::Definition(name.to_string())));
                         for alternative in alternatives {
                             let Alternative {
@@ -141,15 +144,16 @@ impl LalrpopFile {
         }
     }
 
-    fn collect_expr_symbol(expr_symbol: ExprSymbol, span_items: &mut Vec<(Span, SpanItem)>) {
+    fn collect_expr_symbol(expr_symbol: &ExprSymbol, span_items: &mut Vec<(Span, SpanItem)>) {
         let ExprSymbol { symbols } = expr_symbol;
         for symbol in symbols {
             Self::collect_symbol(symbol, span_items);
         }
     }
 
-    fn collect_symbol(symbol: Symbol, span_items: &mut Vec<(Span, SpanItem)>) {
+    fn collect_symbol(symbol: &Symbol, span_items: &mut Vec<(Span, SpanItem)>) {
         let Symbol { span, kind } = symbol;
+        let span = span.to_owned();
         match kind {
             pt::SymbolKind::Expr(expr_symbol) => Self::collect_expr_symbol(expr_symbol, span_items),
             pt::SymbolKind::AmbiguousId(atom) => {
@@ -170,13 +174,13 @@ impl LalrpopFile {
                 }
             }
             pt::SymbolKind::Repeat(repeat_symbol) => {
-                Self::collect_symbol(repeat_symbol.symbol, span_items);
+                Self::collect_symbol(&repeat_symbol.symbol, span_items);
             }
             pt::SymbolKind::Choose(symbol) => {
-                Self::collect_symbol(*symbol, span_items);
+                Self::collect_symbol(symbol, span_items);
             }
             pt::SymbolKind::Name(_name, symbol) => {
-                Self::collect_symbol(*symbol, span_items);
+                Self::collect_symbol(symbol, span_items);
             }
             pt::SymbolKind::Lookahead => {}
             pt::SymbolKind::Lookbehind => {}
