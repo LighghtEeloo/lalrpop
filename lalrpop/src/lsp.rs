@@ -275,12 +275,10 @@ pub struct DiagnosticError {
 
 fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -> DiagnosticError {
     let mut message = String::new();
-    let mut report_error = |file_text: &FileText, span: pt::Span, msg: &str| {
+    // defining an overloaded report_error function to keep minimal code change
+    let mut report_error = |_file_text: &FileText, _span: pt::Span, msg: &str| {
         use std::fmt::Write;
-
         writeln!(&mut message, "{}", msg).unwrap();
-
-        file_text.highlight_fmt(span, &mut message).unwrap();
     };
 
     // copy-pasted from lalrpop/src/build/mod.rs:271:1 for now;
