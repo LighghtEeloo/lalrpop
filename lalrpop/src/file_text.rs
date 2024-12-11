@@ -76,6 +76,7 @@ impl FileText {
         (line, col)
     }
 
+    #[cfg(feature = "lsp")]
     pub fn offset_from_line_col(&self, line: usize, col: usize) -> Option<usize> {
         self.newlines.get(line).map(|n| n + col)
     }
@@ -95,6 +96,50 @@ impl FileText {
     }
 
     pub fn highlight(&self, span: pt::Span, out: &mut dyn Write) -> io::Result<()> {
+        let (start_line, start_col) = self.line_col(span.0);
+        let (end_line, end_col) = self.line_col(span.1);
+
+        // (*) use `saturating_sub` since the start line could be the newline
+        // itself, in which case we'll call it column zero
+
+        // span is within one line:
+        if start_line == end_line {
+            let text = self.line_text(start_line);
+            writeln!(out, "  {}", text)?;
+
+            if end_col - start_col <= 1 {
+                writeln!(out, "  {}^", Repeat(' ', start_col))?;
+            } else {
+                let width = end_col - start_col;
+                writeln!(
+                    out,
+                    "  {}~{}~",
+                    Repeat(' ', start_col),
+                    Repeat('~', width.saturating_sub(2))
+                )?;
+            }
+        } else {
+            // span is across many lines, find the maximal width of any of those
+            let line_strs: Vec<_> = (start_line..=end_line).map(|i| self.line_text(i)).collect();
+            let max_len = line_strs.iter().map(|l| l.len()).max().unwrap();
+            writeln!(
+                out,
+                "  {}{}~+",
+                Repeat(' ', start_col),
+                Repeat('~', max_len - start_col)
+            )?;
+            for line in &line_strs[..line_strs.len() - 1] {
+                writeln!(out, "| {0:<1$} |", line, max_len)?;
+            }
+            writeln!(out, "| {}", line_strs[line_strs.len() - 1])?;
+            writeln!(out, "+~{}", Repeat('~', end_col))?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "lsp")]
+    pub fn highlight_fmt(&self, span: pt::Span, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         let (start_line, start_col) = self.line_col(span.0);
         let (end_line, end_col) = self.line_col(span.1);
 
