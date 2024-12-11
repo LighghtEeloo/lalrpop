@@ -7,16 +7,20 @@
 //! - Go to definition
 //! - Find references
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-use crate::file_text::FileText;
-use crate::grammar::parse_tree as pt;
-use crate::grammar::parse_tree::{Alternative, ExprSymbol, Symbol};
-use crate::grammar::repr as r;
-use crate::normalize;
-use crate::parser;
-use crate::session::Session;
+use {
+    crate::{
+        file_text::FileText,
+        grammar::{
+            parse_tree::{self as pt, Alternative, ExprSymbol, Symbol},
+            repr as r,
+        },
+        normalize::{self, NormError},
+        parser::{self, ParseError},
+        session::Session,
+        tok,
+    },
+    std::{collections::HashMap, io, path::PathBuf},
+};
 
 pub use crate::grammar::parse_tree::Span;
 
@@ -31,6 +35,14 @@ pub enum SpanItem {
     Reference(String),
 }
 
+/// Type annotation of nonterminal and macros.
+pub struct TypeDecl {
+    /// Arguments.
+    pub args: Vec<String>,
+    /// Return type.
+    pub ret: Option<pt::TypeRef>,
+}
+
 /// Info extracted from a LALRPOP file.
 #[allow(dead_code)]
 pub struct LalrpopFile {
@@ -41,7 +53,7 @@ pub struct LalrpopFile {
     /// Span of definitions.
     pub definitions: HashMap<String, Span>,
     /// Type declarations of definitions.
-    pub definition_type_decls: HashMap<String, Option<pt::TypeRef>>,
+    pub definition_type_decls: HashMap<String, TypeDecl>,
     /// Span of references.
     pub references: HashMap<String, Vec<Span>>,
     repr: r::Grammar,
@@ -49,9 +61,10 @@ pub struct LalrpopFile {
 
 impl LalrpopFile {
     /// Constructor.
-    pub fn new(text: impl AsRef<str>) -> Self {
+    pub fn new(text: impl AsRef<str>) -> Result<Self, DiagnosticError> {
         let file_text = FileText::new(PathBuf::new(), text.as_ref().to_owned());
-        let tree: pt::Grammar = parser::parse_grammar(text.as_ref()).unwrap();
+        let tree: pt::Grammar =
+            parser::parse_grammar(text.as_ref()).map_err(|e| report_parse_error(&file_text, e))?;
         let mut span_items = Vec::new();
         let mut definition_type_decls = HashMap::new();
         {
@@ -86,11 +99,17 @@ impl LalrpopFile {
                         attributes: _,
                         span,
                         // we can't do anything with just strings
-                        args: _,
+                        args,
                         type_decl,
                         alternatives,
                     }) => {
-                        definition_type_decls.insert(name.to_string(), type_decl.to_owned());
+                        definition_type_decls.insert(
+                            name.to_string(),
+                            TypeDecl {
+                                args: args.iter().map(|arg| arg.to_string()).collect(),
+                                ret: type_decl.clone(),
+                            },
+                        );
                         let span = span.to_owned();
                         span_items.push((span, SpanItem::Definition(name.to_string())));
                         for alternative in alternatives {
@@ -137,8 +156,14 @@ impl LalrpopFile {
             }
             references
         };
-        let repr: r::Grammar = normalize::normalize(&Session::new(), tree.to_owned()).unwrap();
-        Self {
+        let repr: r::Grammar = normalize::normalize(&Session::new(), tree.to_owned()).map_err(
+            |NormError { message, span }| DiagnosticError {
+                loc: ErrorLoc::Span(span.0, span.1),
+                message,
+                io_error: io::Error::from(io::ErrorKind::InvalidData),
+            },
+        )?;
+        Ok(Self {
             file_text,
             tree,
             span_items,
@@ -146,7 +171,7 @@ impl LalrpopFile {
             references,
             definition_type_decls,
             repr,
-        }
+        })
     }
 
     fn collect_expr_symbol(expr_symbol: &ExprSymbol, span_items: &mut Vec<(Span, SpanItem)>) {
@@ -215,5 +240,138 @@ impl LalrpopFile {
     /// Filter span hits to the closest one.
     pub fn closest_hit(hits: Vec<(Span, SpanItem)>) -> Option<(Span, SpanItem)> {
         hits.into_iter().min_by_key(|(span, _)| span.1 - span.0)
+    }
+}
+
+/// Error location.
+pub enum ErrorLoc {
+    /// Pointwise error.
+    Point(usize),
+    /// Range error.
+    Span(usize, usize),
+}
+
+/// Diagnostic error.
+pub struct DiagnosticError {
+    /// Location of the error.
+    pub loc: ErrorLoc,
+    /// Error message.
+    pub message: String,
+    /// IO error.
+    pub io_error: io::Error,
+}
+
+fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -> DiagnosticError {
+    let mut message = String::new();
+    let mut report_error = |file_text: &FileText, span: pt::Span, msg: &str| {
+        use std::fmt::Write;
+
+        writeln!(&mut message, "{} error: {}", file_text.span_str(span), msg).unwrap();
+
+        file_text.highlight_fmt(span, &mut message).unwrap();
+    };
+
+    // copy-pasted from lalrpop/src/build/mod.rs:271:1 for now;
+    // we need a better error reporting abstraction
+
+    match error {
+        (ParseError::InvalidToken { location }) => {
+            let loc = ErrorLoc::Point(location);
+            let ch = file_text.text()[location..].chars().next().unwrap();
+            report_error(
+                file_text,
+                pt::Span(location, location),
+                &format!("invalid character `{}`", ch),
+            );
+            DiagnosticError {
+                loc,
+                message,
+                io_error: io::Error::from(io::ErrorKind::InvalidData),
+            }
+        }
+
+        (ParseError::UnrecognizedEof { location, .. }) => {
+            let loc = ErrorLoc::Point(location);
+            report_error(
+                file_text,
+                pt::Span(location, location),
+                "unexpected end of file",
+            );
+            DiagnosticError {
+                loc,
+                message,
+                io_error: io::Error::from(io::ErrorKind::UnexpectedEof),
+            }
+        }
+
+        (ParseError::UnrecognizedToken {
+            token: (lo, _, hi),
+            expected,
+        }) => {
+            let _ = expected; // didn't implement this yet :)
+            let loc = ErrorLoc::Span(lo, hi);
+            let text = &file_text.text()[lo..hi];
+            report_error(
+                file_text,
+                pt::Span(lo, hi),
+                &format!("unexpected token: `{}`", text),
+            );
+            DiagnosticError {
+                loc,
+                message,
+                io_error: io::Error::from(io::ErrorKind::InvalidData),
+            }
+        }
+
+        (ParseError::ExtraToken { token: (lo, _, hi) }) => {
+            let loc = ErrorLoc::Span(lo, hi);
+            let text = &file_text.text()[lo..hi];
+            report_error(
+                file_text,
+                pt::Span(lo, hi),
+                &format!("extra token at end of input: `{}`", text),
+            );
+            DiagnosticError {
+                loc,
+                message,
+                io_error: io::Error::from(io::ErrorKind::InvalidData),
+            }
+        }
+
+        (ParseError::User { error }) => {
+            let string = match error.code {
+                tok::ErrorCode::UnrecognizedToken => "unrecognized token",
+                tok::ErrorCode::UnterminatedEscape => "unterminated escape; missing '`'?",
+                tok::ErrorCode::UnrecognizedEscape => {
+                    "unrecognized escape; only \\n, \\r, \\t, \\\" and \\\\ are recognized"
+                }
+                tok::ErrorCode::UnterminatedStringLiteral => {
+                    "unterminated string literal; missing `\"`?"
+                }
+                tok::ErrorCode::UnterminatedCharacterLiteral => {
+                    "unterminated character literal; missing `'`?"
+                }
+                tok::ErrorCode::UnterminatedAttribute => "unterminated #! attribute; missing `]`?",
+                tok::ErrorCode::ExpectedStringLiteral => "expected string literal; missing `\"`?",
+                tok::ErrorCode::UnterminatedCode => {
+                    "unterminated code block; perhaps a missing `;`, `)`, `]` or `}`?"
+                }
+                tok::ErrorCode::UnterminatedBlockComment => {
+                    "unterminated block comment; missing `*/`?"
+                }
+            };
+
+            let loc = ErrorLoc::Point(error.location);
+            report_error(
+                file_text,
+                pt::Span(error.location, error.location + 1),
+                string,
+            );
+            DiagnosticError {
+                loc,
+                message,
+                io_error: io::Error::from(io::ErrorKind::InvalidData),
+            }
+        }
     }
 }
