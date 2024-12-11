@@ -46,6 +46,7 @@ pub struct TypeDecl {
 /// Info extracted from a LALRPOP file.
 #[allow(dead_code)]
 pub struct LalrpopFile {
+    /// The file text, with newline and span info.
     file_text: FileText,
     tree: pt::Grammar,
     /// Spanned items in the file.
@@ -157,8 +158,14 @@ impl LalrpopFile {
             references
         };
         let repr: r::Grammar = normalize::normalize(&Session::new(), tree.to_owned()).map_err(
-            |NormError { message, span }| DiagnosticError {
-                loc: ErrorLoc::Span(span.0, span.1),
+            |NormError {
+                 message,
+                 span: Span(lo, hi),
+             }| DiagnosticError {
+                loc: ErrorLoc::Span {
+                    lo: file_text.line_col(lo),
+                    hi: file_text.line_col(hi),
+                },
                 message,
                 io_error: io::Error::from(io::ErrorKind::InvalidData),
             },
@@ -245,10 +252,15 @@ impl LalrpopFile {
 
 /// Error location.
 pub enum ErrorLoc {
-    /// Pointwise error.
-    Point(usize),
+    /// Pointwise error, line and column.
+    Point(usize, usize),
     /// Range error.
-    Span(usize, usize),
+    Span {
+        /// Low.
+        lo: (usize, usize),
+        /// Hi.
+        hi: (usize, usize),
+    },
 }
 
 /// Diagnostic error.
@@ -266,7 +278,7 @@ fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -
     let mut report_error = |file_text: &FileText, span: pt::Span, msg: &str| {
         use std::fmt::Write;
 
-        writeln!(&mut message, "{} error: {}", file_text.span_str(span), msg).unwrap();
+        writeln!(&mut message, "{}", msg).unwrap();
 
         file_text.highlight_fmt(span, &mut message).unwrap();
     };
@@ -276,7 +288,10 @@ fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -
 
     match error {
         (ParseError::InvalidToken { location }) => {
-            let loc = ErrorLoc::Point(location);
+            let loc = {
+                let (line, col) = file_text.line_col(location);
+                ErrorLoc::Point(line, col)
+            };
             let ch = file_text.text()[location..].chars().next().unwrap();
             report_error(
                 file_text,
@@ -291,7 +306,8 @@ fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -
         }
 
         (ParseError::UnrecognizedEof { location, .. }) => {
-            let loc = ErrorLoc::Point(location);
+            let (line, col) = file_text.line_col(location);
+            let loc = ErrorLoc::Point(line, col);
             report_error(
                 file_text,
                 pt::Span(location, location),
@@ -309,7 +325,10 @@ fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -
             expected,
         }) => {
             let _ = expected; // didn't implement this yet :)
-            let loc = ErrorLoc::Span(lo, hi);
+            let loc = ErrorLoc::Span {
+                lo: file_text.line_col(lo),
+                hi: file_text.line_col(hi),
+            };
             let text = &file_text.text()[lo..hi];
             report_error(
                 file_text,
@@ -324,7 +343,10 @@ fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -
         }
 
         (ParseError::ExtraToken { token: (lo, _, hi) }) => {
-            let loc = ErrorLoc::Span(lo, hi);
+            let loc = ErrorLoc::Span {
+                lo: file_text.line_col(lo),
+                hi: file_text.line_col(hi),
+            };
             let text = &file_text.text()[lo..hi];
             report_error(
                 file_text,
@@ -361,7 +383,10 @@ fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -
                 }
             };
 
-            let loc = ErrorLoc::Point(error.location);
+            let loc = {
+                let (line, col) = file_text.line_col(error.location);
+                ErrorLoc::Point(line, col)
+            };
             report_error(
                 file_text,
                 pt::Span(error.location, error.location + 1),
