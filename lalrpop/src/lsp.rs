@@ -6,9 +6,11 @@
 //! - Syntax highlighting
 //! - Go to definition
 //! - Find references
+//! - Error Diagnostics
 
 use {
     crate::{
+        build,
         file_text::FileText,
         grammar::{
             parse_tree::{self as pt, Alternative, ExprSymbol, Symbol},
@@ -17,9 +19,8 @@ use {
         normalize::{self, NormError},
         parser::{self, ParseError},
         session::Session,
-        tok,
     },
-    std::{collections::HashMap, io, path::PathBuf},
+    std::{collections::HashMap, path::PathBuf},
 };
 
 pub use crate::grammar::parse_tree::Span;
@@ -167,7 +168,6 @@ impl LalrpopFile {
                     hi: file_text.line_col(hi),
                 },
                 message,
-                io_error: io::Error::from(io::ErrorKind::InvalidData),
             },
         )?;
         Ok(Self {
@@ -269,132 +269,16 @@ pub struct DiagnosticError {
     pub loc: ErrorLoc,
     /// Error message.
     pub message: String,
-    /// IO error.
-    pub io_error: io::Error,
 }
 
 fn report_parse_error<'input>(file_text: &FileText, error: ParseError<'input>) -> DiagnosticError {
-    let mut message = String::new();
-    // defining an overloaded report_error function to keep minimal code change
-    let mut report_error = |_file_text: &FileText, _span: pt::Span, msg: &str| {
-        use std::fmt::Write;
-        writeln!(&mut message, "{}", msg).unwrap();
-    };
-
-    // copy-pasted from lalrpop/src/build/mod.rs:271:1 for now;
-    // we need a better error reporting abstraction
-
-    match error {
-        (ParseError::InvalidToken { location }) => {
-            let loc = {
-                let (line, col) = file_text.line_col(location);
-                ErrorLoc::Point(line, col)
-            };
-            let ch = file_text.text()[location..].chars().next().unwrap();
-            report_error(
-                file_text,
-                pt::Span(location, location),
-                &format!("invalid character `{}`", ch),
-            );
-            DiagnosticError {
-                loc,
-                message,
-                io_error: io::Error::from(io::ErrorKind::InvalidData),
-            }
+    build::report_parse_error(file_text, error, |file_text, span, message| {
+        DiagnosticError {
+            loc: ErrorLoc::Span {
+                lo: file_text.line_col(span.0),
+                hi: file_text.line_col(span.1),
+            },
+            message: message.to_string(),
         }
-
-        (ParseError::UnrecognizedEof { location, .. }) => {
-            let (line, col) = file_text.line_col(location);
-            let loc = ErrorLoc::Point(line, col);
-            report_error(
-                file_text,
-                pt::Span(location, location),
-                "unexpected end of file",
-            );
-            DiagnosticError {
-                loc,
-                message,
-                io_error: io::Error::from(io::ErrorKind::UnexpectedEof),
-            }
-        }
-
-        (ParseError::UnrecognizedToken {
-            token: (lo, _, hi),
-            expected,
-        }) => {
-            let _ = expected; // didn't implement this yet :)
-            let loc = ErrorLoc::Span {
-                lo: file_text.line_col(lo),
-                hi: file_text.line_col(hi),
-            };
-            let text = &file_text.text()[lo..hi];
-            report_error(
-                file_text,
-                pt::Span(lo, hi),
-                &format!("unexpected token: `{}`", text),
-            );
-            DiagnosticError {
-                loc,
-                message,
-                io_error: io::Error::from(io::ErrorKind::InvalidData),
-            }
-        }
-
-        (ParseError::ExtraToken { token: (lo, _, hi) }) => {
-            let loc = ErrorLoc::Span {
-                lo: file_text.line_col(lo),
-                hi: file_text.line_col(hi),
-            };
-            let text = &file_text.text()[lo..hi];
-            report_error(
-                file_text,
-                pt::Span(lo, hi),
-                &format!("extra token at end of input: `{}`", text),
-            );
-            DiagnosticError {
-                loc,
-                message,
-                io_error: io::Error::from(io::ErrorKind::InvalidData),
-            }
-        }
-
-        (ParseError::User { error }) => {
-            let string = match error.code {
-                tok::ErrorCode::UnrecognizedToken => "unrecognized token",
-                tok::ErrorCode::UnterminatedEscape => "unterminated escape; missing '`'?",
-                tok::ErrorCode::UnrecognizedEscape => {
-                    "unrecognized escape; only \\n, \\r, \\t, \\\" and \\\\ are recognized"
-                }
-                tok::ErrorCode::UnterminatedStringLiteral => {
-                    "unterminated string literal; missing `\"`?"
-                }
-                tok::ErrorCode::UnterminatedCharacterLiteral => {
-                    "unterminated character literal; missing `'`?"
-                }
-                tok::ErrorCode::UnterminatedAttribute => "unterminated #! attribute; missing `]`?",
-                tok::ErrorCode::ExpectedStringLiteral => "expected string literal; missing `\"`?",
-                tok::ErrorCode::UnterminatedCode => {
-                    "unterminated code block; perhaps a missing `;`, `)`, `]` or `}`?"
-                }
-                tok::ErrorCode::UnterminatedBlockComment => {
-                    "unterminated block comment; missing `*/`?"
-                }
-            };
-
-            let loc = {
-                let (line, col) = file_text.line_col(error.location);
-                ErrorLoc::Point(line, col)
-            };
-            report_error(
-                file_text,
-                pt::Span(error.location, error.location + 1),
-                string,
-            );
-            DiagnosticError {
-                loc,
-                message,
-                io_error: io::Error::from(io::ErrorKind::InvalidData),
-            }
-        }
-    }
+    })
 }
